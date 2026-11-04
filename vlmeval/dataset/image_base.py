@@ -260,6 +260,7 @@ class ImageBaseDataset(metaclass=ABCMeta):
     def prepare_tsv(self, url, file_md5=None):
         data_root = LMUDataRoot()
         os.makedirs(data_root, exist_ok=True)
+        local_only = os.environ.get('VLMEVAL_LOCAL_DATA_ONLY', '').lower() in {'1', 'true', 'yes', 'on'}
         update_flag = False
         file_name_legacy = url.split('/')[-1]
         file_name = f"{self.dataset_name}.tsv"
@@ -271,6 +272,10 @@ class ImageBaseDataset(metaclass=ABCMeta):
             if file_md5 is None or md5(data_path) == file_md5:
                 pass
             else:
+                if local_only:
+                    raise RuntimeError(
+                        f'Local dataset MD5 mismatch: {data_path}. Automatic download is disabled.'
+                    )
                 warnings.warn(f'The tsv file is in {data_root}, but the md5 does not match, will re-download')
                 download_file(url, data_path)
                 update_flag = True
@@ -283,6 +288,10 @@ class ImageBaseDataset(metaclass=ABCMeta):
                 import shutil
                 shutil.move(data_path_legacy, data_path)
             else:
+                if local_only:
+                    raise FileNotFoundError(
+                        f'Local dataset is missing: {data_path}. Automatic download is disabled.'
+                    )
                 download_file(url, data_path)
                 update_flag = True
 

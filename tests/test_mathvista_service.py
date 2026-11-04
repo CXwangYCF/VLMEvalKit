@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import Mock, patch
 
@@ -10,7 +12,7 @@ import pandas as pd
 
 from vlmeval_service.config import Settings
 from vlmeval_service.results import parse_result
-from vlmeval_service.service import MathVistaService
+from vlmeval_service.service import DATASET_MD5, DatasetUnavailableError, MathVistaService
 
 
 class MathVistaServiceTests(unittest.TestCase):
@@ -18,6 +20,7 @@ class MathVistaServiceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.settings = Settings(
+            data_dir=root / "LMUData",
             output_dir=root / "tasks",
             database_url=f"sqlite:///{(root / 'tasks.db').as_posix()}",
             target_base_url="http://target.test/v1",
@@ -42,6 +45,7 @@ class MathVistaServiceTests(unittest.TestCase):
         payload = self.service.capabilities()
         self.assertEqual(payload["dataset"]["canonical_id"], "MathVista_MINI")
         self.assertEqual(payload["dataset"]["sample_count"], 1000)
+        self.assertEqual(payload["dataset"]["source"], "local-only")
         self.assertEqual([j["role"] for j in payload["judges"]], ["primary", "backup"])
         self.assertNotIn("primary-secret", json.dumps(payload))
 
@@ -74,6 +78,8 @@ class MathVistaServiceTests(unittest.TestCase):
         self.assertNotIn("secret", joined)
         self.assertEqual(env["OPENAI_API_KEY"], "primary-secret")
         self.assertEqual(env["LMDEPLOY_API_KEY"], "target-secret")
+        self.assertEqual(env["LMUData"], str(self.settings.data_dir))
+        self.assertEqual(env["VLMEVAL_LOCAL_DATA_ONLY"], "1")
 
     def test_backup_run_requires_primary_parent(self):
         primary, _ = self.service.create({
@@ -91,6 +97,23 @@ class MathVistaServiceTests(unittest.TestCase):
         }, "backup-key")
         self.assertEqual(backup["config"]["judge_role"], "backup")
         self.assertEqual(backup["parent_task_id"], primary["task_id"])
+
+    def test_local_dataset_preflight_rejects_missing_file(self):
+        image_vqa = types.ModuleType("vlmeval.dataset.image_vqa")
+        image_vqa.MathVista = type("MathVista", (), {"DATASET_URL": {"MathVista_MINI": "unused"}})
+        with patch.dict(sys.modules, {"vlmeval.dataset.image_vqa": image_vqa}):
+            with self.assertRaises(DatasetUnavailableError):
+                MathVistaService._validate_dataset(self.service)
+
+    def test_local_dataset_preflight_accepts_pinned_md5(self):
+        self.settings.data_dir.mkdir(parents=True)
+        data_path = self.settings.data_dir / "MathVista_MINI.tsv"
+        data_path.write_bytes(b"test fixture")
+        image_vqa = types.ModuleType("vlmeval.dataset.image_vqa")
+        image_vqa.MathVista = type("MathVista", (), {"DATASET_URL": {"MathVista_MINI": "unused"}})
+        with patch.dict(sys.modules, {"vlmeval.dataset.image_vqa": image_vqa}), \
+                patch("vlmeval_service.service.file_md5", return_value=DATASET_MD5):
+            self.assertEqual(MathVistaService._validate_dataset(self.service), data_path)
 
 
 class ResultParserTests(unittest.TestCase):

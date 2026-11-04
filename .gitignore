@@ -230,3 +230,7 @@ logs/
 !vlmeval_service/results.py
 !deploy/systemd/qwen25-vl-target.service
 !deploy/systemd/qwen38-flash-judge.service
+
+# Keep only the pinned MathVista source TSV; decoded images remain local cache.
+LMUData/*
+!LMUData/MathVista_MINI.tsv

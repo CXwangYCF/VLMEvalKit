@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,14 +20,27 @@ MODEL_ID = "qwen2.5-vl-7b-instruct"
 DATASET_ID = "mathvista"
 DATASET_CANONICAL_ID = "MathVista_MINI"
 DATASET_COUNT = 1000
+DATASET_MD5 = "f199b98e178e5a2a20e7048f5dcb0464"
 
 
 class ConflictError(RuntimeError):
     pass
 
 
+class DatasetUnavailableError(RuntimeError):
+    pass
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def file_md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class MathVistaService:
@@ -48,13 +62,26 @@ class MathVistaService:
         except Exception:
             return "unknown"
 
-    def _validate_dataset(self) -> None:
+    def _validate_dataset(self) -> Path:
         from vlmeval.dataset.image_vqa import MathVista
 
         if DATASET_CANONICAL_ID not in MathVista.DATASET_URL:
             raise RuntimeError(
                 f"Pinned VLMEvalKit does not provide required dataset {DATASET_CANONICAL_ID}"
             )
+        data_path = self.settings.data_dir / f"{DATASET_CANONICAL_ID}.tsv"
+        if not data_path.is_file():
+            raise DatasetUnavailableError(
+                f"Local-only dataset is missing: {data_path}. "
+                "Place MathVista_MINI.tsv in LMUData before creating a task."
+            )
+        digest = file_md5(data_path)
+        if digest != DATASET_MD5:
+            raise DatasetUnavailableError(
+                f"Local dataset MD5 mismatch for {data_path}: expected {DATASET_MD5}, got {digest}. "
+                "Automatic download is disabled."
+            )
+        return data_path
 
     def capabilities(self) -> dict:
         judges = []
@@ -86,6 +113,9 @@ class MathVistaService:
                 "canonical_id": DATASET_CANONICAL_ID,
                 "split": "testmini",
                 "sample_count": DATASET_COUNT,
+                "source": "local-only",
+                "available": (self.settings.data_dir / f"{DATASET_CANONICAL_ID}.tsv").is_file(),
+                "required_md5": DATASET_MD5,
             },
             "judges": judges,
             "protocol": {"temperature": 0, "top_p": 1, "max_tokens": 2048},
@@ -120,7 +150,7 @@ class MathVistaService:
             if judge.role != "backup" or parent["config"]["judge_role"] != "primary":
                 raise ValueError("parent_task_id is only valid for a primary-to-backup full rerun")
 
-        self._validate_dataset()
+        data_path = self._validate_dataset()
         task_id = f"mathvista-{uuid.uuid4().hex[:12]}"
         now = utc_now()
         work_dir = self.settings.output_dir / task_id
@@ -131,7 +161,9 @@ class MathVistaService:
             "dataset_id": DATASET_ID,
             "dataset_name": "MathVista",
             "dataset_canonical_id": DATASET_CANONICAL_ID,
-            "dataset_md5": "f199b98e178e5a2a20e7048f5dcb0464",
+            "dataset_md5": DATASET_MD5,
+            "dataset_path": str(data_path),
+            "dataset_source": "local-only",
             "sample_count": DATASET_COUNT,
             "judge_id": judge.id,
             "judge_name": judge.name,
@@ -192,6 +224,8 @@ class MathVistaService:
         env = os.environ.copy()
         env["LMDEPLOY_API_KEY"] = self.settings.target_api_key
         env["OPENAI_API_KEY"] = judge.api_key
+        env["LMUData"] = str(self.settings.data_dir)
+        env["VLMEVAL_LOCAL_DATA_ONLY"] = "1"
         env["VLMEVALKIT_TASK_ID"] = task["task_id"]
         return command, env
 

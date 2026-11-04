@@ -39,6 +39,7 @@ class JudgeConfig:
 @dataclass(frozen=True)
 class Settings:
     repo_root: Path = REPO_ROOT
+    data_dir: Path = Path(os.getenv("LMUData", str(REPO_ROOT / "LMUData")))
     output_dir: Path = Path(os.getenv("VLMEVAL_OUTPUT_DIR", str(REPO_ROOT / "service_data" / "tasks")))
     database_url: str = os.getenv(
         "VLMEVAL_DATABASE_URL", "sqlite:///service_data/vlmeval_tasks.db"

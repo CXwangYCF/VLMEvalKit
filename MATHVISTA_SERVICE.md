@@ -8,6 +8,8 @@ OpenAI-compatible `--base-url` path and parses VLMEvalKit's native artifacts.
 ## Fixed formal protocol
 
 - Dataset: `MathVista_MINI` (public 1,000-item testmini split, pinned MD5).
+- Data source: local-only `${LMUData}/MathVista_MINI.tsv`; service tasks never
+  download it, and missing or mismatched data fails before a task is queued.
 - Target: `Qwen2.5-VL-7B-Instruct` served by vLLM.
 - Generation: temperature 0, top-p 1, max tokens 2048.
 - Primary judge: `qwen3.8-flash`.
@@ -25,6 +27,11 @@ cp .env.mathvista.example .env
 set -a && source .env && set +a
 python -m uvicorn vlmeval_service.app:app --host 127.0.0.1 --port 8201
 ```
+
+Place the dataset at `LMUData/MathVista_MINI.tsv` before starting a task. The
+required MD5 is `f199b98e178e5a2a20e7048f5dcb0464`. On a production host, set
+`LMUData=/opt/VLMEvalKit/LMUData` (or another absolute directory) in the
+service environment file.
 
 Run service tests with:
 

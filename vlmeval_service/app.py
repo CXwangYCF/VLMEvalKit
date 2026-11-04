@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .service import ConflictError, MathVistaService
+from .service import ConflictError, DatasetUnavailableError, MathVistaService
 
 
 class CreateTaskRequest(BaseModel):
@@ -32,6 +32,7 @@ def health() -> dict:
         "status": "ok",
         "suite": caps["suite"],
         "target_model": caps["target_model"],
+        "dataset": caps["dataset"],
         "judges": caps["judges"],
     }
 
@@ -51,6 +52,8 @@ def create_task(
         task, reused = service.create(payload.model_dump(), idempotency_key)
     except ConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DatasetUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if reused:
