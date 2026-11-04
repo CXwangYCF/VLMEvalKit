@@ -126,6 +126,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-test/
 env/
 venv/
 ENV/
@@ -221,3 +222,11 @@ result*
 debug
 outputs
 scripts/data
+service_data/
+logs/
+.env
+
+# MathVista service sources and deployment templates intentionally tracked.
+!vlmeval_service/results.py
+!deploy/systemd/qwen25-vl-target.service
+!deploy/systemd/qwen38-flash-judge.service

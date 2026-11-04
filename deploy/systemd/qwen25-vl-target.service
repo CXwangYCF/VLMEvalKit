@@ -1,0 +1,14 @@
+[Unit]
+Description=Qwen2.5-VL-7B-Instruct vLLM target
+After=network-online.target
+
+[Service]
+Type=simple
+User=gpu
+EnvironmentFile=/etc/safetyllm/models.env
+ExecStart=/opt/vllm/bin/vllm serve /models/Qwen2.5-VL-7B-Instruct --served-model-name qwen2.5-vl-7b-instruct --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.85 --max-model-len 32768
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

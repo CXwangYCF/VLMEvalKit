@@ -1,0 +1,15 @@
+[Unit]
+Description=VLMEvalKit MathVista task service
+After=network-online.target qwen25-vl-target.service
+
+[Service]
+Type=simple
+User=gpu
+WorkingDirectory=/opt/VLMEvalKit
+EnvironmentFile=/etc/safetyllm/vlmevalkit-mathvista.env
+ExecStart=/opt/VLMEvalKit/.venv/bin/python -m uvicorn vlmeval_service.app:app --host 127.0.0.1 --port 8201
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
