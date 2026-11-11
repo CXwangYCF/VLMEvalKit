@@ -73,6 +73,10 @@ class ImageVQADataset(ImageBaseDataset):
         'https://opencompass.openxlab.space/utils/VLMEval/InfoVQA_TEST.tsv',
         'ChartQA_TEST':
         'https://opencompass.openxlab.space/utils/VLMEval/ChartQA_TEST.tsv',
+        # Generated locally from the pinned Parquet file by vlmeval_service.
+        # It deliberately has no DATASET_MD5 entry: the source Parquet SHA256
+        # is validated and snapshotted by the task service instead.
+        'ChartQA_TEST_LOCAL': 'ChartQA_TEST_LOCAL.tsv',
         'GQA_TestDev_Balanced':
         'https://opencompass.openxlab.space/utils/VLMEval/GQA_TestDev_Balanced.tsv',
     }

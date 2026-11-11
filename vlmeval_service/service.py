@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,16 +10,13 @@ import sys
 from threading import RLock
 import uuid
 
+from .chartqa_data import DATASETS, PreparedDataset, prepare_dataset
 from .config import Settings, public_base_url
-from .results import checkpoint_progress, empty_summary, normalize_samples, parse_result
+from .results import checkpoint_progress, empty_summary, find_detail_file, normalize_samples, parse_result
 from .store import TaskStore
 
 
 MODEL_ID = "qwen2.5-vl-7b-instruct"
-DATASET_ID = "mathvista"
-DATASET_CANONICAL_ID = "MathVista_MINI"
-DATASET_COUNT = 1000
-DATASET_MD5 = "f199b98e178e5a2a20e7048f5dcb0464"
 
 
 class ConflictError(RuntimeError):
@@ -35,21 +31,13 @@ def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def file_md5(path: Path) -> str:
-    digest = hashlib.md5()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-class MathVistaService:
+class ChartQAService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
         self.settings.output_dir.mkdir(parents=True, exist_ok=True)
         self.store = TaskStore(self.settings.database_path)
         self.store.mark_interrupted(utc_now())
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mathvista")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chartqa")
         self._processes: dict[str, subprocess.Popen] = {}
         self._lock = RLock()
         self.upstream_commit = self._git_commit()
@@ -62,42 +50,70 @@ class MathVistaService:
         except Exception:
             return "unknown"
 
-    def _validate_dataset(self) -> Path:
-        from vlmeval.dataset.image_vqa import MathVista
+    def _source_path(self, dataset_id: str) -> Path:
+        if dataset_id == "chartqa-test":
+            return self.settings.chartqa_test_path
+        if dataset_id == "chartqapro":
+            return self.settings.chartqapro_path
+        raise ValueError(f"unsupported dataset: {dataset_id}")
 
-        if DATASET_CANONICAL_ID not in MathVista.DATASET_URL:
+    def _prepare(self, dataset_id: str) -> PreparedDataset:
+        try:
+            prepared = prepare_dataset(
+                dataset_id,
+                self._source_path(dataset_id),
+                self.settings.data_dir,
+            )
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            raise DatasetUnavailableError(str(exc)) from exc
+        self._validate_runtime_id(prepared)
+        return prepared
+
+    @staticmethod
+    def _validate_runtime_id(prepared: PreparedDataset) -> None:
+        if prepared.dataset_id == "chartqa-test":
+            from vlmeval.dataset.image_vqa import ImageVQADataset
+
+            supported = ImageVQADataset.DATASET_URL
+        else:
+            from vlmeval.dataset.chartqapro import ChartQAPro
+
+            supported = ChartQAPro.DATASET_URL
+        if prepared.runtime_id not in supported:
             raise RuntimeError(
-                f"Pinned VLMEvalKit does not provide required dataset {DATASET_CANONICAL_ID}"
+                f"pinned VLMEvalKit does not register local dataset {prepared.runtime_id}"
             )
-        data_path = self.settings.data_dir / f"{DATASET_CANONICAL_ID}.tsv"
-        if not data_path.is_file():
-            raise DatasetUnavailableError(
-                f"Local-only dataset is missing: {data_path}. "
-                "Place MathVista_MINI.tsv in LMUData before creating a task."
-            )
-        digest = file_md5(data_path)
-        if digest != DATASET_MD5:
-            raise DatasetUnavailableError(
-                f"Local dataset MD5 mismatch for {data_path}: expected {DATASET_MD5}, got {digest}. "
-                "Automatic download is disabled."
-            )
-        return data_path
+
+    def _cached_count(self, dataset_id: str) -> int | None:
+        runtime_id = DATASETS[dataset_id]["runtime_id"]
+        path = self.settings.data_dir / f"{runtime_id}.local.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("source_path") == str(self._source_path(dataset_id).resolve()):
+                return int(payload["sample_count"])
+        except (OSError, ValueError, KeyError):
+            pass
+        return None
 
     def capabilities(self) -> dict:
-        judges = []
-        for judge in self.settings.judges.values():
-            judges.append({
-                "id": judge.id,
-                "name": judge.name,
-                "role": judge.role,
-                "available": judge.available,
-                "base_url": public_base_url(judge.base_url),
-                "unavailable_reason": None if judge.available else "judge endpoint or API key is not configured",
+        datasets = []
+        for dataset_id, spec in DATASETS.items():
+            source_path = self._source_path(dataset_id)
+            datasets.append({
+                "id": dataset_id,
+                "name": spec["name"],
+                "canonical_id": spec["canonical_id"],
+                "runtime_id": spec["runtime_id"],
+                "sample_count": self._cached_count(dataset_id),
+                "source": "local-parquet",
+                "available": source_path.is_file(),
+                "path": str(source_path),
+                "unavailable_reason": None if source_path.is_file() else "local Parquet file is missing",
             })
         return {
             "suite": {
-                "id": "vlmevalkit-mathvista",
-                "name": "VLMEvalKit MathVista",
+                "id": "vlmevalkit-chartqa",
+                "name": "VLMEvalKit ChartQA",
                 "version": "1.0.0",
                 "upstream_commit": self.upstream_commit,
             },
@@ -107,23 +123,26 @@ class MathVistaService:
                 "transport": "openai-compatible-vllm",
                 "base_url": public_base_url(self.settings.target_base_url),
             },
-            "dataset": {
-                "id": DATASET_ID,
-                "name": "MathVista",
-                "canonical_id": DATASET_CANONICAL_ID,
-                "split": "testmini",
-                "sample_count": DATASET_COUNT,
-                "source": "local-only",
-                "available": (self.settings.data_dir / f"{DATASET_CANONICAL_ID}.tsv").is_file(),
-                "required_md5": DATASET_MD5,
+            "datasets": datasets,
+            "evaluator": {
+                "id": "chartqa-official-local",
+                "name": "Official deterministic evaluator",
+                "uses_judge": False,
             },
-            "judges": judges,
-            "protocol": {"temperature": 0, "top_p": 1, "max_tokens": 2048},
+            "protocol": {
+                "prompt_mode": "direct",
+                "temperature": 0,
+                "top_p": 1,
+                "max_tokens": 2048,
+            },
         }
 
     @staticmethod
     def _public_task(task: dict) -> dict:
-        return {key: value for key, value in task.items() if key not in {"work_dir", "pid", "idempotency_key"}}
+        return {
+            key: value for key, value in task.items()
+            if key not in {"work_dir", "pid", "idempotency_key"}
+        }
 
     def _active_task(self) -> dict | None:
         active = self.store.active()
@@ -134,46 +153,39 @@ class MathVistaService:
         if reused is not None:
             return self._public_task(reused), True
         if self._active_task() is not None:
-            raise ConflictError("another formal MathVista task is already active")
-        if payload["model_id"] != MODEL_ID or payload["dataset_id"] != DATASET_ID:
-            raise ValueError("only Qwen2.5-VL-7B-Instruct on MathVista is supported")
-        judge = self.settings.judges.get(payload["judge_id"])
-        if judge is None:
-            raise ValueError(f"unsupported judge: {payload['judge_id']}")
-        if not judge.available:
-            raise ValueError(f"judge is not configured: {judge.id}")
-        parent_task_id = payload.get("parent_task_id")
-        if parent_task_id:
-            parent = self.store.get(parent_task_id)
-            if parent is None:
-                raise ValueError("parent task does not exist")
-            if judge.role != "backup" or parent["config"]["judge_role"] != "primary":
-                raise ValueError("parent_task_id is only valid for a primary-to-backup full rerun")
+            raise ConflictError("another formal ChartQA task is already active")
+        if payload.get("model_id") != MODEL_ID:
+            raise ValueError("only Qwen2.5-VL-7B-Instruct is supported")
+        dataset_id = payload.get("dataset_id")
+        if dataset_id not in DATASETS:
+            raise ValueError(f"unsupported dataset: {dataset_id}")
+        if payload.get("parent_task_id"):
+            raise ValueError("parent_task_id is not used by deterministic ChartQA evaluation")
 
-        data_path = self._validate_dataset()
-        task_id = f"mathvista-{uuid.uuid4().hex[:12]}"
+        prepared = self._prepare(dataset_id)
+        task_id = f"chartqa-{uuid.uuid4().hex[:12]}"
         now = utc_now()
         work_dir = self.settings.output_dir / task_id
         work_dir.mkdir(parents=True, exist_ok=False)
         config = {
             "model_id": MODEL_ID,
             "model_name": "Qwen2.5-VL-7B-Instruct",
-            "dataset_id": DATASET_ID,
-            "dataset_name": "MathVista",
-            "dataset_canonical_id": DATASET_CANONICAL_ID,
-            "dataset_md5": DATASET_MD5,
-            "dataset_path": str(data_path),
-            "dataset_source": "local-only",
-            "sample_count": DATASET_COUNT,
-            "judge_id": judge.id,
-            "judge_name": judge.name,
-            "judge_role": judge.role,
-            "judge_base_url": public_base_url(judge.base_url),
+            "dataset_id": dataset_id,
+            "dataset_name": prepared.name,
+            "dataset_canonical_id": prepared.canonical_id,
+            "dataset_runtime_id": prepared.runtime_id,
+            "dataset_source": "local-parquet",
+            "dataset_source_path": str(prepared.source_path),
+            "dataset_sha256": prepared.source_sha256,
+            "dataset_cache_path": str(prepared.tsv_path),
+            "sample_count": prepared.sample_count,
+            "evaluator_id": "chartqa-official-local",
+            "uses_judge": False,
             "target_base_url": public_base_url(self.settings.target_base_url),
             "upstream_commit": self.upstream_commit,
             "generation": {"temperature": 0, "top_p": 1, "max_tokens": 2048},
         }
-        execution = checkpoint_progress(work_dir, DATASET_COUNT)
+        execution = checkpoint_progress(work_dir, prepared.runtime_id, prepared.sample_count)
         execution["in_progress"] = 0
         task = {
             "task_id": task_id,
@@ -182,11 +194,11 @@ class MathVistaService:
             "created_at": now,
             "updated_at": now,
             "attempt": 1,
-            "parent_task_id": parent_task_id,
+            "parent_task_id": None,
             "idempotency_key": idempotency_key,
             "config": config,
             "execution_status": execution,
-            "result": {"summary": empty_summary(), "quality_status": "partial"},
+            "result": {"summary": empty_summary(prepared.sample_count), "quality_status": "partial"},
             "error": None,
             "work_dir": str(work_dir),
             "pid": None,
@@ -199,11 +211,11 @@ class MathVistaService:
         return self._public_task(task), False
 
     def _command(self, task: dict, reuse: bool) -> tuple[list[str], dict[str, str]]:
-        judge = self.settings.judges[task["config"]["judge_id"]]
+        config = task["config"]
         command = [
             sys.executable,
             str(self.settings.repo_root / "run.py"),
-            "--data", DATASET_CANONICAL_ID,
+            "--data", config["dataset_runtime_id"],
             "--model", self.settings.target_model,
             "--base-url", self.settings.target_base_url,
             "--model-class", "LMDeployAPI",
@@ -214,30 +226,31 @@ class MathVistaService:
             "--temperature", "0",
             "--top-p", "1",
             "--timeout", str(self.settings.request_timeout),
-            "--judge", judge.name,
-            "--judge-base-url", judge.base_url,
-            "--judge-api-nproc", str(self.settings.judge_api_nproc),
-            "--judge-timeout", str(self.settings.judge_timeout),
         ]
         if reuse:
             command.extend(["--reuse", "--reuse-aux", "all"])
         env = os.environ.copy()
         env["LMDEPLOY_API_KEY"] = self.settings.target_api_key
-        env["OPENAI_API_KEY"] = judge.api_key
         env["LMUData"] = str(self.settings.data_dir)
         env["VLMEVAL_LOCAL_DATA_ONLY"] = "1"
         env["VLMEVALKIT_TASK_ID"] = task["task_id"]
         return command, env
 
+    def _progress(self, task: dict) -> dict:
+        return checkpoint_progress(
+            Path(task["work_dir"]),
+            task["config"]["dataset_runtime_id"],
+            int(task["config"]["sample_count"]),
+        )
+
     def _run(self, task_id: str, reuse: bool) -> None:
         task = self.store.get(task_id)
         if task is None:
             return
-        now = utc_now()
         self.store.update(
             task_id,
             status="running",
-            updated_at=now,
+            updated_at=utc_now(),
             execution_status={**task["execution_status"], "in_progress": 1},
             error=None,
         )
@@ -260,7 +273,7 @@ class MathVistaService:
             if current is None or current["status"] in {"paused", "interrupted"}:
                 return
             if exit_code != 0:
-                execution = checkpoint_progress(Path(task["work_dir"]), DATASET_COUNT)
+                execution = self._progress(task)
                 self.store.update(
                     task_id,
                     status="failed",
@@ -271,23 +284,26 @@ class MathVistaService:
                     pid=None,
                 )
                 return
+            config = task["config"]
             summary, _, quality = parse_result(
-                Path(task["work_dir"]), task["config"]["judge_id"], DATASET_COUNT
+                Path(task["work_dir"]),
+                config["dataset_id"],
+                config["dataset_runtime_id"],
+                int(config["sample_count"]),
             )
+            total = int(config["sample_count"])
             execution = {
-                "total": DATASET_COUNT,
+                "total": total,
                 "processed": summary["processed"],
-                "succeeded": summary["processed"] - summary["inference_errors"] - summary["judge_errors"],
+                "succeeded": summary["processed"] - summary["inference_errors"],
                 "in_progress": 0,
-                "pending": max(0, DATASET_COUNT - summary["processed"]),
+                "pending": max(0, total - summary["processed"]),
                 "inference_errors": summary["inference_errors"],
-                "judge_errors": summary["judge_errors"],
-                "progress": 100 if summary["processed"] == DATASET_COUNT else round(summary["processed"] / 10, 2),
+                "progress": round(100 * summary["processed"] / total, 2) if total else 0,
             }
-            status = "completed" if quality == "qualified" else "failed"
             self.store.update(
                 task_id,
-                status=status,
+                status="completed" if quality == "qualified" else "failed",
                 quality_status=quality,
                 updated_at=utc_now(),
                 execution_status=execution,
@@ -313,7 +329,7 @@ class MathVistaService:
         if task is None:
             return None
         if task["status"] in {"queued", "running", "pausing"}:
-            execution = checkpoint_progress(Path(task["work_dir"]), DATASET_COUNT)
+            execution = self._progress(task)
             if task["status"] == "queued":
                 execution["in_progress"] = 0
             self.store.update(task_id, execution_status=execution, updated_at=utc_now())
@@ -339,7 +355,7 @@ class MathVistaService:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
-        execution = checkpoint_progress(Path(task["work_dir"]), DATASET_COUNT)
+        execution = self._progress(task)
         execution["in_progress"] = 0
         self.store.update(
             task_id,
@@ -357,7 +373,7 @@ class MathVistaService:
         if task is None:
             return None
         if self._active_task() is not None:
-            raise ConflictError("another formal MathVista task is already active")
+            raise ConflictError("another formal ChartQA task is already active")
         if task["status"] not in {"paused", "failed", "interrupted"}:
             raise ConflictError("only paused, failed, or interrupted tasks can be retried")
         self.store.update(
@@ -378,16 +394,11 @@ class MathVistaService:
         task = self.store.get(task_id)
         if task is None:
             return None
-        samples = normalize_samples(
-            self._detail_file(Path(task["work_dir"])), task["config"]["judge_id"]
+        detail = find_detail_file(
+            Path(task["work_dir"]), task["config"]["dataset_runtime_id"]
         )
+        samples = normalize_samples(detail, task["config"]["dataset_id"])
         return {"items": samples[offset:offset + limit], "total": len(samples)}
-
-    @staticmethod
-    def _detail_file(work_dir: Path) -> Path | None:
-        from .results import find_detail_file
-
-        return find_detail_file(work_dir)
 
     def artifact(self, task_id: str) -> bytes | None:
         task = self.store.get(task_id)
@@ -395,9 +406,10 @@ class MathVistaService:
             return None
         artifact = Path(task["work_dir"]) / "results.jsonl"
         if not artifact.exists():
-            samples = normalize_samples(
-                self._detail_file(Path(task["work_dir"])), task["config"]["judge_id"]
+            detail = find_detail_file(
+                Path(task["work_dir"]), task["config"]["dataset_runtime_id"]
             )
+            samples = normalize_samples(detail, task["config"]["dataset_id"])
             artifact.write_text(
                 "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in samples),
                 encoding="utf-8",

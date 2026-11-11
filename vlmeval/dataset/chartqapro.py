@@ -15,6 +15,8 @@ class ChartQAPro(ImageBaseDataset):
         "ChartQAPro": "https://opencompass.openxlab.space/utils/VLMEval/chartqapro.tsv",
         "ChartQAPro_CoT": "https://opencompass.openxlab.space/utils/VLMEval/chartqapro.tsv",
         "ChartQAPro_PoT": "https://opencompass.openxlab.space/utils/VLMEval/chartqapro.tsv",
+        # Local-only Direct Answer variant prepared from the supplied Parquet.
+        "ChartQAPro_LOCAL": "ChartQAPro_LOCAL.tsv",
     }
     DATASET_MD5 = {
         "ChartQAPro": "27653ea8dd8dd3a85bc4f432db96447a",

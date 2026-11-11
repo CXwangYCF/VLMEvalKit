@@ -169,6 +169,10 @@ cache_dir/*
 *.pth
 data
 
+# Local import scratch files were migrated into vlmeval_service/chartqa_data.py.
+# Keep the originals available on the workstation without committing duplicates.
+/src/
+
 # Evaluation Outputs
 outputs/*
 demo.ipynb

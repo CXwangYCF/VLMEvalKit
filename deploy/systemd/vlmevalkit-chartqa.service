@@ -1,0 +1,15 @@
+[Unit]
+Description=VLMEvalKit ChartQA task service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/VLMEvalKit
+EnvironmentFile=/etc/safetyllm/vlmevalkit-chartqa.env
+ExecStart=/opt/VLMEvalKit/.venv/bin/python -m uvicorn vlmeval_service.app:app --host 127.0.0.1 --port 8203 --workers 1
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -40,6 +40,14 @@ class JudgeConfig:
 class Settings:
     repo_root: Path = REPO_ROOT
     data_dir: Path = Path(os.getenv("LMUData", str(REPO_ROOT / "LMUData")))
+    chartqa_test_path: Path = Path(os.getenv(
+        "VLMEVAL_CHARTQA_TEST_PATH",
+        str(REPO_ROOT / "data" / "ChartQA_TEST" / "test-00000-of-00001.parquet"),
+    ))
+    chartqapro_path: Path = Path(os.getenv(
+        "VLMEVAL_CHARTQAPRO_PATH",
+        str(REPO_ROOT / "data" / "ChartQAPro" / "test-00000-of-00001.parquet"),
+    ))
     output_dir: Path = Path(os.getenv("VLMEVAL_OUTPUT_DIR", str(REPO_ROOT / "service_data" / "tasks")))
     database_url: str = os.getenv(
         "VLMEVAL_DATABASE_URL", "sqlite:///service_data/vlmeval_tasks.db"

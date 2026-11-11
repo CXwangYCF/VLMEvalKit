@@ -3,20 +3,19 @@ from __future__ import annotations
 from fastapi import FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .service import ConflictError, DatasetUnavailableError, MathVistaService
+from .service import ChartQAService, ConflictError, DatasetUnavailableError
 
 
 class CreateTaskRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_id: str = Field(pattern=r"^qwen2\.5-vl-7b-instruct$")
-    dataset_id: str = Field(pattern=r"^mathvista$")
-    judge_id: str = Field(pattern=r"^(qwen3\.8-flash|gpt-5\.5)$")
+    dataset_id: str = Field(pattern=r"^(chartqa-test|chartqapro)$")
     parent_task_id: str | None = None
 
 
-service = MathVistaService()
-app = FastAPI(title="VLMEvalKit MathVista task service", version="1.0.0")
+service = ChartQAService()
+app = FastAPI(title="VLMEvalKit ChartQA task service", version="1.0.0")
 
 
 def task_or_404(task: dict | None) -> dict:
@@ -32,8 +31,8 @@ def health() -> dict:
         "status": "ok",
         "suite": caps["suite"],
         "target_model": caps["target_model"],
-        "dataset": caps["dataset"],
-        "judges": caps["judges"],
+        "datasets": caps["datasets"],
+        "evaluator": caps["evaluator"],
     }
 
 
